@@ -191,10 +191,10 @@ class SearchQuerySet:
                         self._result_cache.pop()
                         continue
                 else:
-                    # No objects were returned -- possible due to SQS nesting such as
-                    # XYZ.objects.filter(id__gt=10) where the amount ignored are
-                    # exactly equal to the ITERATOR_LOAD_PER_QUERY
-                    del self._result_cache[:1]
+                    # No objects for this model survived loading. Remove an
+                    # unfilled slot at the end so earlier cached results stay
+                    # in place and iteration can continue past this batch.
+                    self._result_cache.pop()
                     self._ignored_result_count += 1
                     continue
 

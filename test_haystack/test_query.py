@@ -1,5 +1,6 @@
 import datetime
 import pickle
+from unittest import mock
 
 from django.test import TestCase
 from django.test.utils import override_settings
@@ -728,6 +729,58 @@ class SearchQuerySetTestCase(TestCase):
 
         # Restore.
         connections["default"]._index = old_ui
+
+    def test_load_all_preserves_cached_results_before_an_empty_batch(self):
+        # Leave the search index unchanged after deleting a full batch of objects.
+        MockModel.objects.filter(pk__gte=11, pk__lte=20).delete()
+        results = self.msqs.load_all()
+        results._fill_cache(0, 10)
+        first_batch = results._result_cache[:10]
+
+        results._fill_cache(10, 20)
+
+        self.assertEqual(results._result_cache[:10], first_batch)
+        expected = list(range(1, 11)) + [21, 22, 23]
+        self.assertEqual([result.pk for result in results], expected)
+        # Reading the completed cache again must return the same live objects.
+        self.assertEqual([result.object.pk for result in results], expected)
+        self.assertEqual(len(results), len(expected))
+
+    def test_load_all_skips_stale_results_across_batches(self):
+        cases = (
+            list(range(1, 11)),
+            list(range(11, 21)),
+            list(range(14, 24)),
+            list(range(1, 24)),
+            [3, 13, 23],
+        )
+        for excluded in cases:
+            with self.subTest(excluded=excluded):
+                objects = MockModel.objects.exclude(pk__in=excluded)
+                results = self.msqs.load_all()
+                search = results.query.backend.search
+                calls = []
+
+                def bounded_search(*args, **kwargs):
+                    # A regression must fail instead of hanging the test runner.
+                    calls.append(kwargs)
+                    self.assertLess(
+                        len(calls), 20, "Search iteration did not terminate"
+                    )
+                    return search(*args, **kwargs)
+
+                with (
+                    mock.patch.object(
+                        self.bmmsi, "read_queryset", return_value=objects
+                    ),
+                    mock.patch.object(
+                        results.query.backend, "search", side_effect=bounded_search
+                    ),
+                ):
+                    expected = [pk for pk in range(1, 24) if pk not in excluded]
+                    self.assertEqual([result.object.pk for result in results], expected)
+                    self.assertEqual([result.object.pk for result in results], expected)
+                    self.assertEqual(len(results), len(expected))
 
     def test_auto_query(self):
         sqs = self.msqs.auto_query("test search -stuff")

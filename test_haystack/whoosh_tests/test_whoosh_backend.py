@@ -1083,6 +1083,30 @@ class LiveWhooshSearchQuerySetTestCase(WhooshTestCase):
         except:
             self.fail()
 
+    def test_load_all_after_deleting_an_indexed_batch(self):
+        objects = [
+            MockModel.objects.create(author="cache%02d" % i, tag_id=1)
+            for i in range(23)
+        ]
+        self.sb.update(self.wmmi, objects)
+        MockModel.objects.filter(pk__in=[obj.pk for obj in objects[10:20]]).delete()
+        results = self.sqs.order_by("name").load_all()
+
+        results._fill_cache(0, 10)
+        results._fill_cache(10, 20)
+
+        # A stale batch must not discard the preceding page or leave cache holes.
+        expected = [obj.pk for obj in objects[:10] + objects[20:]]
+        self.assertEqual(
+            [
+                result.pk if result is not None else None
+                for result in results._result_cache
+            ],
+            expected,
+        )
+        self.assertEqual([result.object.pk for result in results], expected)
+        self.assertEqual([result.object.pk for result in results], expected)
+
     def test_regression_space_query(self):
         self.sb.update(self.wmmi, self.sample_objs)
         self.assertTrue(self.sb.index.doc_count() > 0)
